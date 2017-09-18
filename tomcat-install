@@ -1,0 +1,141 @@
+#!/bin/bash
+
+####
+# The purpose of this script is to automate
+# the basic installation and configuration 
+# of Apache Tomcat
+####
+
+##
+# Variables
+##
+
+TC_PKG="tomcat"
+TC_WEBAPPS="tomcat-webapps tomcat-admin-webapps"
+TC_DOCS="tomcat-docs-webapp tomcat-javadoc"
+TC_CONFIG="/usr/share/tomcat/conf/tomcat.conf"
+TC_USERS_CONFIG="/usr/share/tomcat/conf/tomcat-users.xml"
+JAVA_OPTS='JAVA_OPTS="-Djava.security.egd=file:/dev/./urandom -Djava.awt.headless=true -Xmx512m -XX:MaxPermSize=256m -XX:+UseConcMarkSweepGC"'
+TC_USER_END='</tomcat-users>'
+TC_USER='<user name="admin" password="defaultpass" roles="admin,manager, admin-gui, admin-script, manager-gui, manager-script, manager-jmx, manager-status" />'
+TC_SERVICE="tomcat.service"
+IP_ADDR="$(ip addr show | grep -A 2 "2:" | grep inet | cut -d " " -f 6 | cut -d "/" -f1)"
+TC_PORT="8080"
+
+##
+# Functions
+##
+
+# Basic error message generator, accepts input and echos error message to stderr
+# TODO: build in support for log file, different verbosity levels
+err() {
+  echo -e "\n[ERROR $(date +'%Y-%m-%dT%H:%M:%S%z')]: $@\n" >&2
+}
+
+# Checks that user executing script has root priveleges, and if not exits
+root_chk() {
+  if [[ ${EUID} != 0 ]]; then
+    err "Please rerun this script with root privileges. Exiting."
+    exit 1
+  fi
+}
+
+# Performs full update of system, prompts user whether to continue if it fails
+# TODO: Prompt user whether to perform updates or not
+update() {
+  if ! yum update -y; then
+    err 'System was not updated successfully. Would you like to continue? [y/n]'
+    read upd_prompt
+    if [[ ${upd_prompt} != "y" ]] || [[ ${upd_prompt} != "yes" ]]; then
+      exit 1
+    fi
+  fi
+}
+
+# Installs software packages required for Tomcat, exits script if there is a failure
+install() {
+  for package in ${TC_PKG} ${TC_WEBAPPS} ${TC_DOCS} ; do
+    if ! yum install -y ${package}; then
+      err "${package} was not installed successfully. Please resolve issue and rerun script."
+      exit 1
+    fi
+  done
+}
+
+# Edits the Tomcat config file to add custom java options
+config() {
+  echo ${JAVA_OPTS} >> ${TC_CONFIG}
+}
+
+# Edits the Tomcat users config file to add admin user
+config_user() {
+  sed -i "s|${TC_USER_END}|${TC_USER}|g" ${TC_USERS_CONFIG}
+  echo ${TC_USER_END} >> ${TC_USERS_CONFIG}
+}
+
+# Prompts for a password for the Tomcat admin user and edits the config file
+config_passwd() {
+  stty -echo
+  while true; do
+    read passwd1
+    echo "Retype password:"
+    read passwd2
+    if [[ ${passwd1} != ${passwd2} ]]; then
+      echo "Passwords do not match. Try again."
+    else
+      tc_passwd=${passwd1}
+      break
+    fi
+  done
+  stty echo
+  sed -i s/defaultpass/${tc_passwd}/g ${TC_USERS_CONFIG}
+}
+
+# Starts and enables Tomcat service at boot, prompts user to perform actions
+# manually if there is a failure
+# TODO: Add support for starting/enabling services via legacy upstart/init commands
+start_enable() {
+  for service in ${TC_SERVICE}; do
+    if ! systemctl start ${service}; then
+      err "${service} could not be started. Please resolve issue and start service manually."
+    fi
+    if ! systemctl enable ${service}; then
+      err "${service} could not be enabled to start at boot. Please resolve issue and enable service \
+manually."
+    fi
+  done
+}
+
+main() {
+  echo -e "\nChecking for root privileges...\n"
+  root_chk
+
+  echo -e "\nUpdating system...\n"
+  update
+
+  echo -e "\nInstalling necessary packages...\n"
+  install
+
+  echo -e "\nConfiguring Tomcat..\n"
+
+  config
+
+  config_user
+
+  echo -e "\nPlease enter a password for the Tomcat administrative user: \n"
+  config_passwd
+
+  echo -e "\nStarting services and enabling them to start at boot...\n"
+  start_enable
+
+  echo -e "\nInstallation and basic configuration has finished. You can test the Tomcat application \
+server by browsing to http://${IP_ADDR}:${TC_PORT}.\n"
+
+  exit
+}
+
+##
+# Main script
+##
+
+main
